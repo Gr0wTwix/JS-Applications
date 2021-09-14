@@ -403,16 +403,18 @@
 
     var users = userService.parseRequest;
 
-    const { NotFoundError: NotFoundError$1, RequestError: RequestError$1 } = errors;
+    /*
+     * This service requires storage and auth plugins
+     */
+
+    const { NotFoundError: NotFoundError$1, RequestError: RequestError$1, CredentialError: CredentialError$1, AuthorizationError: AuthorizationError$1 } = errors;
 
 
-    var crud = {
-        get,
-        post,
-        put,
-        delete: del
-    };
-
+    const dataService$1 = new Service_1();
+    dataService$1.get(':collection', get);
+    dataService$1.post(':collection', post);
+    dataService$1.put(':collection', put);
+    dataService$1.delete(':collection', del);
 
     function validateRequest(context, tokens, query) {
         /*
@@ -507,7 +509,7 @@
                     .map(p => p.split(' ').filter(p => p != ''))
                     .map(([p, desc]) => ({ prop: p, desc: desc ? true : false }));
 
-                // Sorting priority is from first to last, therefore we sort from last to first
+                // Sorting priority is from first ot last, therefore we sort from last to first
                 for (let i = props.length - 1; i >= 0; i--) {
                     let { prop, desc } = props[i];
                     responseData.sort(({ [prop]: propA }, { [prop]: propB }) => {
@@ -567,8 +569,6 @@
             }
         }
 
-        context.canAccess(responseData);
-
         return responseData;
     }
 
@@ -579,10 +579,14 @@
         if (tokens.length > 0) {
             throw new RequestError$1('Use PUT to update records');
         }
-        context.canAccess(undefined, body);
 
-        body._ownerId = context.user._id;
         let responseData;
+
+        if (context.user) {
+            body._ownerId = context.user._id;
+        } else {
+            throw new AuthorizationError$1();
+        }
 
         try {
             responseData = context.storage.add(context.params.collection, body);
@@ -602,6 +606,11 @@
         }
 
         let responseData;
+
+        if (!context.user) {
+            throw new AuthorizationError$1();
+        }
+
         let existing;
 
         try {
@@ -610,7 +619,9 @@
             throw new NotFoundError$1();
         }
 
-        context.canAccess(existing, body);
+        if (context.user._id !== existing._ownerId) {
+            throw new CredentialError$1();
+        }
 
         try {
             responseData = context.storage.set(context.params.collection, tokens[0], body);
@@ -628,6 +639,11 @@
         }
 
         let responseData;
+
+        if (!context.user) {
+            throw new AuthorizationError$1();
+        }
+
         let existing;
 
         try {
@@ -636,7 +652,9 @@
             throw new NotFoundError$1();
         }
 
-        context.canAccess(existing);
+        if (context.user._id !== existing._ownerId) {
+            throw new CredentialError$1();
+        }
 
         try {
             responseData = context.storage.delete(context.params.collection, tokens[0]);
@@ -647,18 +665,6 @@
         return responseData;
     }
 
-    /*
-     * This service requires storage and auth plugins
-     */
-
-
-
-
-    const dataService$1 = new Service_1();
-    dataService$1.get(':collection', crud.get);
-    dataService$1.post(':collection', crud.post);
-    dataService$1.put(':collection', crud.put);
-    dataService$1.delete(':collection', crud.delete);
 
     var data$1 = dataService$1.parseRequest;
 
@@ -947,7 +953,7 @@
 
     var storage = initPlugin;
 
-    const { ConflictError: ConflictError$1, CredentialError: CredentialError$1, RequestError: RequestError$2 } = errors;
+    const { ConflictError: ConflictError$1, CredentialError: CredentialError$2, RequestError: RequestError$2 } = errors;
 
     function initPlugin$1(settings) {
         const identity = settings.identity;
@@ -973,7 +979,7 @@
                 if (user !== undefined) {
                     context.user = user;
                 } else {
-                    throw new CredentialError$1('Invalid access token');
+                    throw new CredentialError$2('Invalid access token');
                 }
             }
 
@@ -986,10 +992,10 @@
                 } else if (context.protectedStorage.query('users', { [identity]: body[identity] }).length !== 0) {
                     throw new ConflictError$1(`A user with the same ${identity} already exists`);
                 } else {
-                    const newUser = Object.assign({}, body, {
+                    const newUser = {
                         [identity]: body[identity],
                         hashedPassword: hash(body.password)
-                    });
+                    };
                     const result = context.protectedStorage.add('users', newUser);
                     delete result.hashedPassword;
 
@@ -1012,10 +1018,10 @@
 
                         return result;
                     } else {
-                        throw new CredentialError$1('Login or password don\'t match');
+                        throw new CredentialError$2('Login or password don\'t match');
                     }
                 } else {
-                    throw new CredentialError$1('Login or password don\'t match');
+                    throw new CredentialError$2('Login or password don\'t match');
                 }
             }
 
@@ -1026,7 +1032,7 @@
                         context.protectedStorage.delete('sessions', session._id);
                     }
                 } else {
-                    throw new CredentialError$1('User session does not exist');
+                    throw new CredentialError$2('User session does not exist');
                 }
             }
 
@@ -1069,133 +1075,6 @@
     }
 
     var util$2 = initPlugin$2;
-
-    /*
-     * This plugin requires auth and storage plugins
-     */
-
-    const { RequestError: RequestError$3, ConflictError: ConflictError$2, CredentialError: CredentialError$2, AuthorizationError: AuthorizationError$1 } = errors;
-
-    function initPlugin$3(settings) {
-        const actions = {
-            'GET': '.read',
-            'POST': '.create',
-            'PUT': '.update',
-            'DELETE': '.delete'
-        };
-        const rules = Object.assign({
-            '*': {
-                '.create': ['User'],
-                '.update': ['Owner'],
-                '.delete': ['Owner']
-            }
-        }, settings.rules);
-
-        return function decorateContext(context, request) {
-            // special rules (evaluated at run-time)
-            const parent = (collectionName, id) => {
-                return context.storage.get(collectionName, id)._ownerId;
-            };
-            context.rules = {
-                parent
-            };
-
-            context.canAccess = canAccess;
-
-            function canAccess(data, newData) {
-                const user = context.user;
-                const action = actions[request.method];
-                let { rule, propRules } = getRule(action, context.params.collection, data);
-
-                if (Array.isArray(rule)) {
-                    rule = checkRoles(rule, data);
-                } else if (typeof rule == 'string') {
-                    rule = !!(eval(rule));
-                }
-                if (!rule) {
-                    throw new CredentialError$2();
-                }
-                propRules.map(r => applyPropRule(action, r, user, data, newData));
-            }
-
-            function applyPropRule(action, [prop, rule], user, data, newData) {
-                // NOTE: user needs to be in scope for eval to work on certain rules
-                if (typeof rule == 'string') {
-                    rule = !!eval(rule);
-                }
-
-                if (rule == false) {
-                    if (action == '.create' || action == '.update') {
-                        delete newData[prop];
-                    } else if (action == '.read') {
-                        delete data[prop];
-                    }
-                }
-            }
-
-            function checkRoles(roles, data, newData) {
-                if (roles.includes('Guest')) {
-                    return true;
-                } else if (!context.user) {
-                    throw new AuthorizationError$1();
-                } else if (roles.includes('User')) {
-                    return true;
-                } else if (roles.includes('Owner')) {
-                    return context.user._id == data._ownerId;
-                } else {
-                    return false;
-                }
-            }
-        };
-
-
-
-        function getRule(action, collection, data = {}) {
-            let currentRule = ruleOrDefault(true, rules['*'][action]);
-            let propRules = [];
-
-            // Top-level rules for the collection
-            const collectionRules = rules[collection];
-            if (collectionRules !== undefined) {
-                // Top-level rule for the specific action for the collection
-                currentRule = ruleOrDefault(currentRule, collectionRules[action]);
-
-                // Prop rules
-                const allPropRules = collectionRules['*'];
-                if (allPropRules !== undefined) {
-                    propRules = ruleOrDefault(propRules, getPropRule(allPropRules, action));
-                }
-
-                // Rules by record id 
-                const recordRules = collectionRules[data._id];
-                if (recordRules !== undefined) {
-                    currentRule = ruleOrDefault(currentRule, recordRules[action]);
-                    propRules = ruleOrDefault(propRules, getPropRule(recordRules, action));
-                }
-            }
-
-            return {
-                rule: currentRule,
-                propRules
-            };
-        }
-
-        function ruleOrDefault(current, rule) {
-            return (rule === undefined || rule.length === 0) ? current : rule;
-        }
-
-        function getPropRule(record, action) {
-            const props = Object
-                .entries(record)
-                .filter(([k]) => k[0] != '.')
-                .filter(([k, v]) => v.hasOwnProperty(action))
-                .map(([k, v]) => [k, v[action]]);
-
-            return props;
-        }
-    }
-
-    var rules = initPlugin$3;
 
     var identity = "email";
     var protectedData = {
@@ -1412,113 +1291,18 @@
     			_createdOn: 1615033491967,
     			_id: "b8608c22-dd57-4b24-948e-b358f536b958"
     		}
-    	},
-    	catalog: {
-    		"53d4dbf5-7f41-47ba-b485-43eccb91cb95": {
-    			_ownerId: "35c62d76-8152-4626-8712-eeb96381bea8",
-    			make: "Table",
-    			model: "Swedish",
-    			year: 2015,
-    			description: "Medium table",
-    			price: 235,
-    			img: "./images/table.png",
-    			material: "Hardwood",
-    			_createdOn: 1615545143015,
-    			_id: "53d4dbf5-7f41-47ba-b485-43eccb91cb95"
-    		},
-    		"f5929b5c-bca4-4026-8e6e-c09e73908f77": {
-    			_ownerId: "847ec027-f659-4086-8032-5173e2f9c93a",
-    			make: "Sofa",
-    			model: "ES-549-M",
-    			year: 2018,
-    			description: "Three-person sofa, blue",
-    			price: 1200,
-    			img: "./images/sofa.jpg",
-    			material: "Frame - steel, plastic; Upholstery - fabric",
-    			_createdOn: 1615545572296,
-    			_id: "f5929b5c-bca4-4026-8e6e-c09e73908f77"
-    		},
-    		"c7f51805-242b-45ed-ae3e-80b68605141b": {
-    			_ownerId: "847ec027-f659-4086-8032-5173e2f9c93a",
-    			make: "Chair",
-    			model: "Bright Dining Collection",
-    			year: 2017,
-    			description: "Dining chair",
-    			price: 180,
-    			img: "./images/chair.jpg",
-    			material: "Wood laminate; leather",
-    			_createdOn: 1615546332126,
-    			_id: "c7f51805-242b-45ed-ae3e-80b68605141b"
-    		}
-    	},
-    	teams: {
-    		"34a1cab1-81f1-47e5-aec3-ab6c9810efe1": {
-    			_ownerId: "35c62d76-8152-4626-8712-eeb96381bea8",
-    			name: "Storm Troopers",
-    			logoUrl: "/assets/atat.png",
-    			description: "These ARE the droids we're looking for",
-    			_createdOn: 1615737591748,
-    			_id: "34a1cab1-81f1-47e5-aec3-ab6c9810efe1"
-    		},
-    		"dc888b1a-400f-47f3-9619-07607966feb8": {
-    			_ownerId: "847ec027-f659-4086-8032-5173e2f9c93a",
-    			name: "Team Rocket",
-    			logoUrl: "/assets/rocket.png",
-    			description: "Gotta catch 'em all!",
-    			_createdOn: 1615737655083,
-    			_id: "dc888b1a-400f-47f3-9619-07607966feb8"
-    		},
-    		"733fa9a1-26b6-490d-b299-21f120b2f53a": {
-    			_ownerId: "847ec027-f659-4086-8032-5173e2f9c93a",
-    			name: "Minions",
-    			logoUrl: "/assets/hydrant.png",
-    			description: "Friendly neighbourhood jelly beans, helping evil-doers succeed.",
-    			_createdOn: 1615737688036,
-    			_id: "733fa9a1-26b6-490d-b299-21f120b2f53a"
-    		}
-    	},
-    	members: {
-    		m1: {
-    			_ownerId: "35c62d76-8152-4626-8712-eeb96381bea8",
-    			status: "pending",
-    			teamId: "dc888b1a-400f-47f3-9619-07607966feb8",
-    			_id: "m1"
-    		}
-    	}
-    };
-    var rules$1 = {
-    	users: {
-    		".create": false,
-    		".read": [
-    			"Owner"
-    		],
-    		".update": false,
-    		".delete": false
-    	},
-    	members: {
-    		".update": "user._id == parent('teams', data.teamId)",
-    		"*": {
-    			teamId: {
-    				".update": false
-    			},
-    			status: {
-    				".create": "newData.status = 'pending'"
-    			}
-    		}
     	}
     };
     var settings = {
     	identity: identity,
     	protectedData: protectedData,
-    	seedData: seedData,
-    	rules: rules$1
+    	seedData: seedData
     };
 
     const plugins = [
         storage(settings),
         auth(settings),
-        util$2(),
-        rules(settings)
+        util$2()
     ];
 
     const server = http__default['default'].createServer(requestHandler(plugins, services));
